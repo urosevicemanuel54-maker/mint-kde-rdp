@@ -239,6 +239,26 @@ jobs:
           sleep 2
           curl -fsS "http://127.0.0.1:8080/" >/dev/null && echo "browser test page is up on 8080"
 
+          # Reach the same page over the Tailscale interface, which is the path the phone uses.
+          TS_IP="$(sudo tailscale ip -4 | sed -n '1p')"
+          if curl -fsS --max-time 10 "http://${TS_IP}:8080/" >/dev/null; then
+            echo "page reachable over the Tailscale interface on ${TS_IP}:8080"
+          else
+            echo "::warning::Page not reachable over ${TS_IP}:8080 from the runner itself."
+          fi
+
+          # Which peers does this node see as online right now, and can it reach your phone?
+          # If these pings fail, the phone cannot reach this machine whatever RDP does.
+          echo "--- online peers ---"
+          sudo tailscale status --json 2>/dev/null \
+            | jq -r '.Peer[] | select(.Online==true) | "\(.HostName)  \(.OS)  \(.TailscaleIPs[0])"' \
+            || true
+          for ip in $(sudo tailscale status --json 2>/dev/null \
+                         | jq -r '.Peer[] | select(.Online==true and (.OS=="iOS" or .OS=="android")) | .TailscaleIPs[0]'); do
+            echo "--- ping ${ip} ---"
+            sudo timeout 20 tailscale ping --until-direct=false --timeout=5s "${ip}" || true
+          done
+
       - name: Show how to connect
         run: |
           set -euo pipefail
@@ -255,6 +275,10 @@ jobs:
             echo ""
             echo "- **Browser test:** \`http://${TS_IP}:8080\` — open this on your phone first. If it"
             echo "  loads, the network path is fine and the RDP problem is xrdp or the client."
+            echo ""
+            echo "**If that page just hangs:** your phone is not reaching *this* machine. In the"
+            echo "Tailscale app, delete every old \`${TS_HOSTNAME}\` device and keep only the one whose"
+            echo "IP is exactly \`${TS_IP}\`; check that the Tailscale switch at the top is on."
             echo ""
             echo "If the name does not connect, use the Tailscale IP above: earlier runs leave offline"
             echo "nodes behind that can still own the plain \`${TS_HOSTNAME}\` name."
