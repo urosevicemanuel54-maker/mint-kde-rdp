@@ -136,9 +136,12 @@ jobs:
             exit 1
           fi
 
+          # --network host: xrdp binds the runner's own network stack, so it is reachable on
+          # tailscale0 exactly like a native install. Publishing the port with -p instead puts
+          # Docker's NAT and userland proxy between Tailscale and xrdp, an extra layer the
+          # working Linux RDP setups do not have.
           docker rm -f desktop >/dev/null 2>&1 || true
-          docker run -d --name desktop --privileged --init --shm-size=1g \
-            -p 3389:3389 \
+          docker run -d --name desktop --privileged --init --shm-size=1g --network host \
             -e RDP_USER="${RDP_USER}" \
             -e RDP_PASSWORD="${RDP_PASSWORD}" \
             "${image}"
@@ -177,17 +180,36 @@ jobs:
             exit 1
           fi
 
-          echo "--- reachability over Tailscale ---"
+          echo "--- reachability ---"
           TS_IP="$(sudo tailscale ip -4 | sed -n '1p')"
-          # Send the first packet every RDP client sends (an X.224 Connection Request) to the
-          # Tailscale address. A working xrdp answers with a Connection Confirm: 03 00 00 13 0e d0.
-          reply="$(printf '\x03\x00\x00\x13\x0e\xe0\x00\x00\x00\x00\x00\x01\x00\x08\x00\x03\x00\x00\x00' \
-            | timeout 15 bash -c "exec 3<>/dev/tcp/${TS_IP}/3389; cat >&3; timeout 5 dd bs=1 count=19 <&3 2>/dev/null" \
-            | od -An -tx1 | tr -d ' \n' || true)"
-          if [ "${reply:0:4}" = "0300" ] && [ "${reply:10:2}" = "d0" ]; then
-            echo "RDP handshake OK on ${TS_IP}:3389: xrdp answered the connection request"
+          sudo tailscale status | sed -n '1,3p'
+          echo "tailscale interface:"
+          ip -4 addr show tailscale0 2>/dev/null | sed -n '1,5p' || echo "(no tailscale0)"
+
+          # Send the first packet every RDP client sends (an X.224 Connection Request). A working
+          # xrdp answers with a Connection Confirm: 03 00 00 13 0e d0.
+          rdp_probe() {
+            printf '\x03\x00\x00\x13\x0e\xe0\x00\x00\x00\x00\x00\x01\x00\x08\x00\x03\x00\x00\x00' \
+              | timeout 15 bash -c "exec 3<>/dev/tcp/$1/3389; cat >&3; timeout 5 dd bs=1 count=19 <&3 2>/dev/null" \
+              | od -An -tx1 | tr -d ' \n' || true
+          }
+          handshake_ok() {
+            [ "${1:0:4}" = "0300" ] && [ "${1:10:2}" = "d0" ]
+          }
+
+          local_reply="$(rdp_probe 127.0.0.1)"
+          if handshake_ok "${local_reply}"; then
+            echo "xrdp answers RDP on 127.0.0.1:3389"
           else
-            echo "::warning::RDP handshake on ${TS_IP}:3389 did not get the expected reply. Got: '${reply:-nothing}'"
+            echo "::error::xrdp does not answer RDP on 127.0.0.1:3389. Reply: '${local_reply:-nothing}'. The container log above says why."
+            exit 1
+          fi
+
+          tailnet_reply="$(rdp_probe "${TS_IP}")"
+          if handshake_ok "${tailnet_reply}"; then
+            echo "RDP handshake OK on ${TS_IP}:3389 over Tailscale"
+          else
+            echo "::warning::xrdp answers on 127.0.0.1 but not on ${TS_IP}:3389. Reply: '${tailnet_reply:-nothing}'. The Tailscale interface is the problem, not xrdp."
           fi
 
           ss -ltn | grep ':3389'

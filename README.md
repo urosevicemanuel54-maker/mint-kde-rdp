@@ -94,8 +94,13 @@ switch between them whenever you like. The from-scratch workflow stays as the fa
 is missing or you changed `docker/Dockerfile` without rebuilding.
 
 The image is a private GHCR package by default; the workflow logs in with the repository token to
-pull it, so nothing has to be public. `prebuilt.yml` runs `docker run --privileged`, which Xorg
-inside the container needs — it is a throwaway runner, so that trade is fine.
+pull it, so nothing has to be public. `prebuilt.yml` runs `docker run --privileged --network host`:
+privileged because Xorg inside the container needs it, and host networking so `xrdp` binds the
+runner's own network stack and is reachable on the Tailscale interface directly — publishing the
+port with `-p` would put Docker's NAT and proxy between Tailscale and `xrdp`, which is exactly the
+kind of thing that silently refuses connections. The runner is throwaway, so the trade is fine.
+The starter step proves it end to end: it sends a real RDP connection request to `127.0.0.1` and to
+the Tailscale IP, and the log says which of the two failed.
 
 ## 5. Connect
 
