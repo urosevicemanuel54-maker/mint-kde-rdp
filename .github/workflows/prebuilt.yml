@@ -179,10 +179,15 @@ jobs:
 
           echo "--- reachability over Tailscale ---"
           TS_IP="$(sudo tailscale ip -4 | sed -n '1p')"
-          if timeout 10 bash -c "exec 3<>/dev/tcp/${TS_IP}/3389"; then
-            echo "TCP connect to ${TS_IP}:3389 succeeded from the runner itself"
+          # Send the first packet every RDP client sends (an X.224 Connection Request) to the
+          # Tailscale address. A working xrdp answers with a Connection Confirm: 03 00 00 13 0e d0.
+          reply="$(printf '\x03\x00\x00\x13\x0e\xe0\x00\x00\x00\x00\x00\x01\x00\x08\x00\x03\x00\x00\x00' \
+            | timeout 15 bash -c "exec 3<>/dev/tcp/${TS_IP}/3389; cat >&3; timeout 5 dd bs=1 count=19 <&3 2>/dev/null" \
+            | od -An -tx1 | tr -d ' \n' || true)"
+          if [ "${reply:0:4}" = "0300" ] && [ "${reply:10:2}" = "d0" ]; then
+            echo "RDP handshake OK on ${TS_IP}:3389: xrdp answered the connection request"
           else
-            echo "::warning::Could not open TCP 3389 on ${TS_IP} from the runner itself."
+            echo "::warning::RDP handshake on ${TS_IP}:3389 did not get the expected reply. Got: '${reply:-nothing}'"
           fi
 
           ss -ltn | grep ':3389'
