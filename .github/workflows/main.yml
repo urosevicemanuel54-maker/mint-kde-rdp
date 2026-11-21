@@ -151,14 +151,21 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          tmp="$(mktemp -d)"
-          git clone --depth 1 https://github.com/linuxmint/mint-y-icons.git "${tmp}/icons"
-          sudo cp -r "${tmp}/icons/usr/share/icons/." /usr/share/icons/
-          sudo gtk-update-icon-cache -f -t /usr/share/icons/Mint-Y || true
 
-          sudo -u "${RDP_USER}" bash -lc 'if command -v kwriteconfig5 >/dev/null 2>&1; then
-            kwriteconfig5 --file kdeglobals --group Icons --key Theme Mint-Y
-          fi'
+          # Cosmetic only: if the icon set cannot be fetched, keep going.
+          tmp="$(mktemp -d)"
+          if git clone --depth 1 https://github.com/linuxmint/mint-y-icons.git "${tmp}/icons"; then
+            sudo cp -r "${tmp}/icons/usr/share/icons/." /usr/share/icons/
+            sudo gtk-update-icon-cache -f -t /usr/share/icons/Mint-Y || true
+
+            # Select the theme in the user's KDE config (written before the first login).
+            printf '[Icons]\nTheme=Mint-Y\n' \
+              | sudo tee "/home/${RDP_USER}/.config/kdeglobals" >/dev/null
+            sudo chown "${RDP_USER}:$(id -gn "${RDP_USER}")" \
+              "/home/${RDP_USER}/.config/kdeglobals"
+          else
+            echo "::warning::Could not fetch the Mint-Y icon theme; continuing with KDE's default icons."
+          fi
 
       - name: Configure xrdp to start KDE Plasma
         run: |
@@ -183,6 +190,9 @@ jobs:
 
           sudo chmod 0755 /etc/xrdp/startwm.sh
 
+          command -v startplasma-x11 >/dev/null \
+            || echo "::warning::startplasma-x11 is missing, Plasma will not start over RDP"
+
           sudo systemctl enable --now xrdp
           sudo systemctl restart xrdp
           sudo systemctl is-active xrdp
@@ -199,14 +209,24 @@ jobs:
           version: latest
           timeout: 5m
           retry: 3
-          # Do not pull your tailnet's advertised subnet routes into the runner's routing table.
-          args: --accept-routes=false
+
+      - name: Keep the runner's routing table untouched
+        # The action always passes --accept-routes, so change it afterwards instead of
+        # passing the flag twice (tailscale up rejects duplicate booleans).
+        run: |
+          set -euo pipefail
+          sudo tailscale set --accept-routes=false || true
 
       - name: Show how to connect
         run: |
           set -euo pipefail
-          TS_IP="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
-          TS_NAME="$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' 2>/dev/null | sed 's/\.$//' || true)"
+          TS_IP="$(sudo tailscale ip -4 2>/dev/null | head -n1 || true)"
+          TS_NAME="$(sudo tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' 2>/dev/null | sed 's/\.$//' || true)"
+
+          if [ -z "${TS_IP}" ]; then
+            echo "::warning::Could not read the Tailscale address, check the 'Connect to Tailscale' step."
+          fi
+          ss -ltn | grep ':3389' || echo "::warning::Nothing is listening on port 3389"
           {
             echo "## Your desktop is online"
             echo ""
