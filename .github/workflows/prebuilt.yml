@@ -143,28 +143,37 @@ jobs:
             -e RDP_PASSWORD="${RDP_PASSWORD}" \
             "${image}"
 
-          for _ in $(seq 1 60); do
-            if ss -ltn 2>/dev/null | grep ':3389' >/dev/null; then
+          # Wait until xrdp really accepts connections INSIDE the container. Checking the port
+          # on the runner is not enough: Docker's proxy binds the host port the moment the
+          # container starts, seconds before xrdp inside it opens its own socket.
+          listening=0
+          for _ in $(seq 1 90); do
+            if docker exec desktop ss -ltn 2>/dev/null | grep -q ':3389'; then
+              listening=1
               break
             fi
-            sleep 2
+            if [ "$(docker inspect -f '{{.State.Running}}' desktop 2>/dev/null)" != "true" ]; then
+              break
+            fi
+            sleep 1
           done
 
           echo "--- container ---"
           docker ps -a --filter name=desktop
           echo "--- container log ---"
           docker logs desktop || true
+          echo "--- listeners inside the container ---"
+          docker exec desktop ss -ltn 2>/dev/null || true
+          echo "--- xrdp log ---"
+          docker exec desktop sh -c 'cat /var/log/xrdp.log 2>/dev/null || echo "(none: xrdp logs to the container log)"' || true
 
-          # Docker's port proxy binds the host port even when nothing inside the container
-          # listens, so also check inside the container.
           if [ "$(docker inspect -f '{{.State.Running}}' desktop 2>/dev/null)" != "true" ]; then
             echo "::error::The desktop container is not running. Its log is above."
             exit 1
           fi
 
-          if ! docker exec desktop ss -ltn 2>/dev/null | grep ':3389' >/dev/null; then
-            docker exec desktop sh -c 'ps aux' || true
-            echo "::error::Nothing inside the container is listening on 3389. Its log and process list are above."
+          if [ "${listening}" -ne 1 ]; then
+            echo "::error::xrdp did not open port 3389 inside the container within 90 seconds. The container log and xrdp log are above."
             exit 1
           fi
 
@@ -224,7 +233,7 @@ jobs:
               sleep "${step}"
             fi
 
-            if ! ss -ltn 2>/dev/null | grep ':3389' >/dev/null; then
+            if ! docker exec desktop ss -ltn 2>/dev/null | grep -q ':3389'; then
               echo "The desktop stopped listening, restarting the container"
               docker logs --tail 20 desktop || true
               docker restart desktop || true

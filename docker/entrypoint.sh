@@ -44,4 +44,30 @@ if ! pgrep -x xrdp-sesman >/dev/null; then
   exit 1
 fi
 
-exec xrdp --nodaemon
+echo "Starting xrdp on 0.0.0.0:3389"
+xrdp --nodaemon &
+xrdp_pid=$!
+
+# xrdp opens its listening socket a moment after it starts. Say so when it does, and fail
+# loudly when it never does, instead of leaving a container that looks up but answers nothing.
+listening=0
+for _ in $(seq 1 30); do
+  if ss -ltn 2>/dev/null | grep -q ':3389'; then
+    listening=1
+    break
+  fi
+  if ! kill -0 "${xrdp_pid}" 2>/dev/null; then
+    echo "xrdp exited during start-up; its log is above." >&2
+    exit 1
+  fi
+  sleep 1
+done
+
+if [ "${listening}" -ne 1 ]; then
+  echo "xrdp did not open port 3389 within 30 seconds; restarting it in the foreground for its log." >&2
+  kill "${xrdp_pid}" 2>/dev/null || true
+  exec xrdp --nodaemon
+fi
+
+echo "xrdp is listening on 0.0.0.0:3389"
+wait "${xrdp_pid}"

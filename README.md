@@ -157,6 +157,12 @@ If the name does not resolve, MagicDNS is off in your tailnet (Admin console →
   missing `/run/xrdp` directory, both handled by the workflow; if it still fails, the log lines it
   dumps are the answer. If the step went green but `xrdp stopped listening` appears in the
   keep-alive, it restarted the daemon.
+- **`Nothing inside the container is listening on 3389` (prebuilt workflow):** that message was
+  reported too early in earlier versions — Docker's port proxy binds the host port the instant the
+  container starts, while `xrdp` inside opens its socket a moment later. The workflow now waits up
+  to 90 seconds for the port *inside* the container, and `docker logs` carries xrdp's own log
+  (`LogFile=/dev/stdout` in the image) so a real bind failure is readable. If it still fails, the
+  `--- container log ---` and `--- listeners inside the container ---` blocks say why.
 - **RDP connects but the session is black / disconnects immediately:** check the run log for
   `startplasma-x11`. If Plasma fails to start, the `install KDE Plasma` step likely changed
   packages; workaround is to add `--install-recommends` (remove `--no-install-recommends`).

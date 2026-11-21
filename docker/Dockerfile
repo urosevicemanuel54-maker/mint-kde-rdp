@@ -52,6 +52,10 @@ RUN mkdir -p /etc/xdg \
     && printf '[Wallet]\nEnabled=false\nFirst Use=false\n' > /etc/xdg/kwalletrc \
     && printf '[Compositing]\nEnabled=false\n' > /etc/xdg/kwinrc
 
+# Send xrdp's own log to the container's stdout. Without this it logs to /var/log/xrdp.log,
+# `docker logs` stays empty, and a refused bind looks like "started but listening on nothing".
+RUN sed -i -E 's|^LogFile=.*|LogFile=/dev/stdout|; s|^LogLevel=.*|LogLevel=INFO|' /etc/xrdp/xrdp.ini
+
 # The session xrdp runs on every login: KDE Plasma on X11 with a session bus.
 COPY startwm.sh /etc/xrdp/startwm.sh
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
