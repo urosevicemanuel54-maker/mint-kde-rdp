@@ -234,3 +234,11 @@ jobs:
           done
 
           echo "Keep-alive finished, the runner will be destroyed."
+
+      - name: Disconnect from Tailscale
+        # Logging out removes the ephemeral node from the tailnet immediately, so the next run
+        # gets the plain hostname back instead of mint-kde-2, -3, ...
+        if: always()
+        run: |
+          sudo tailscale logout || true
+          echo "Removed this run's node from the tailnet."

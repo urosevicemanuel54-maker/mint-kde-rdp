@@ -118,9 +118,9 @@ If the name does not resolve, MagicDNS is off in your tailnet (Admin console →
   5.5 hour run is ~340 minutes, so about 5 to 6 runs a month. On a **public** repo, standard
   runners are free, so running it all day costs nothing but makes the workflow file (not the
   secrets) public. Keep it private and run it on demand unless you really want it always on.
-- **Ephemeral node.** The workflow runs `tailscaled` with in-memory state, so the machine is
-  registered as an ephemeral Tailscale node and is removed from your tailnet shortly after the
-  run ends. Nothing piles up in the admin console.
+- **Ephemeral node.** Each run logs into Tailscale as an ephemeral node and logs out when the run
+  ends, so the machine disappears from your tailnet immediately instead of piling up. If a run is
+  killed before that cleanup, the node is reaped 30 to 60 minutes later instead.
 - The scheduled `cron` block is commented out on purpose. Uncomment it only if the repo is public
   or you accept the minutes.
 
@@ -169,9 +169,10 @@ If the name does not resolve, MagicDNS is off in your tailnet (Admin console →
   key itself: generate a fresh one with Reusable + Ephemeral ticked and re-paste the whole value.
 - **`TS_AUTHKEY does not look like an auth key`:** the secret does not start with `tskey-auth-`.
   That is usually a Tailscale **API** token or an OAuth client ID sitting in the wrong secret.
-- **The machine shows up as `mint-kde-2` instead of `mint-kde`:** the previous ephemeral node has not
-  been reaped yet (Tailscale removes them 30 to 60 minutes after they go offline), so the new one
-  gets a suffix. Use the address the run printed, or wait an hour.
+- **The machine shows up as `mint-kde-2` instead of `mint-kde`:** an earlier node still owns the
+  plain name — either its run was killed before the workflow could log out, or it has not been
+  reaped yet (Tailscale removes idle ephemeral nodes after 30 to 60 minutes). Use the address the
+  run printed, or wait an hour.
 - **Cannot find the host:** MagicDNS off, or you are not signed in to the tailnet on the client.
   Use the IP from the run summary.
 - **"Failed to start session" in xrdp logs:** the desktop user's home is missing or not writable;
