@@ -129,6 +129,12 @@ If the name does not resolve, MagicDNS is off in your tailnet (Admin console →
 
 - **`Add the Linux Mint look` shows an error or a warning:** that step is cosmetic (icon theme
   only) and can never stop the desktop; the run continues with KDE's default icons.
+- **"Can't establish a connection" / nothing on port 3389:** the run log shows
+  `xrdp is not listening on port 3389` and now prints the service status, journal and
+  `/var/log/xrdp.log` above that error. Usual causes are a missing snakeoil TLS certificate or a
+  missing `/run/xrdp` directory, both handled by the workflow; if it still fails, the log lines it
+  dumps are the answer. If the step went green but `xrdp stopped listening` appears in the
+  keep-alive, it restarted the daemon.
 - **RDP connects but the session is black / disconnects immediately:** check the run log for
   `startplasma-x11`. If Plasma fails to start, the `install KDE Plasma` step likely changed
   packages; workaround is to add `--install-recommends` (remove `--no-install-recommends`).

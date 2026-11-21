@@ -159,6 +159,7 @@ jobs:
             kate \
             xrdp \
             xorgxrdp \
+            ssl-cert \
             dbus-x11 \
             x11-xserver-utils \
             fonts-dejavu-core \
@@ -251,10 +252,56 @@ jobs:
           command -v startplasma-x11 >/dev/null \
             || echo "::warning::startplasma-x11 is missing, Plasma will not start over RDP"
 
-          sudo systemctl enable --now xrdp
+          # xrdp dies without a word when its runtime directories or the snakeoil TLS key are
+          # missing: a package installed into an already-booted machine never got them from
+          # boot-time tmpfiles, and then nothing is listening on 3389.
+          sudo systemd-tmpfiles --create 2>/dev/null || true
+          sudo install -d -o xrdp -g xrdp -m 0755 /run/xrdp /var/log/xrdp /var/lib/xrdp
+          if [ ! -s /etc/ssl/private/ssl-cert-snakeoil.key ]; then
+            sudo make-ssl-cert generate-default-snakeoil --force-overwrite || true
+          fi
+          sudo adduser xrdp ssl-cert || true
+          grep -E '^(port|address)=' /etc/xrdp/xrdp.ini || true
+
+          sudo systemctl daemon-reload
+          sudo systemctl enable xrdp-sesman >/dev/null 2>&1 || true
+          sudo systemctl enable xrdp >/dev/null 2>&1 || true
+          sudo systemctl restart xrdp-sesman 2>/dev/null || true
           sudo systemctl restart xrdp
-          sudo systemctl is-active xrdp
-          ss -ltn | grep ':3389' || true
+
+          # "systemctl is-active" reports active for SysV-wrapped units even after the daemon
+          # has exited, so wait for the port itself instead of trusting the unit.
+          for _ in $(seq 1 30); do
+            if ss -ltn 2>/dev/null | grep ':3389' >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+
+          if ! ss -ltn 2>/dev/null | grep ':3389' >/dev/null; then
+            echo "--- systemctl status xrdp ---"
+            sudo systemctl status xrdp --no-pager || true
+            echo "--- recent logs ---"
+            sudo journalctl -u xrdp -u xrdp-sesman -n 40 --no-pager || true
+            sudo tail -n 40 /var/log/xrdp.log 2>/dev/null || echo "(no /var/log/xrdp.log)"
+
+            echo "::warning::xrdp did not start through systemctl, starting the daemon directly"
+            sudo systemd-run --unit=xrdp-fallback --collect /usr/sbin/xrdp --nodaemon || true
+            for _ in $(seq 1 15); do
+              if ss -ltn 2>/dev/null | grep ':3389' >/dev/null; then
+                break
+              fi
+              sleep 2
+            done
+          fi
+
+          if ! ss -ltn 2>/dev/null | grep ':3389' >/dev/null; then
+            sudo journalctl -u xrdp-fallback -n 40 --no-pager || true
+            echo "::error::xrdp is not listening on port 3389, so no RDP client can connect. The logs above say why."
+            exit 1
+          fi
+
+          ss -ltn | grep ':3389'
 
       - name: Show how to connect
         run: |
@@ -303,8 +350,8 @@ jobs:
               sleep "${step}"
             fi
 
-            if ! sudo systemctl is-active --quiet xrdp; then
-              echo "xrdp stopped running, restarting it"
+            if ! ss -ltn 2>/dev/null | grep ':3389' >/dev/null; then
+              echo "xrdp stopped listening, restarting it"
               sudo systemctl restart xrdp || true
             fi
 
