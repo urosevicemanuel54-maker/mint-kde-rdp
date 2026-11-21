@@ -73,6 +73,64 @@ jobs:
 
           echo "Secrets look complete."
 
+      - name: Connect to Tailscale
+        # Runs before the desktop install, so a bad key fails in seconds instead of after
+        # a ten-minute KDE download.
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+        run: |
+          set -euo pipefail
+
+          # Secrets pasted on a phone often carry a trailing newline or spaces, which the
+          # control plane answers with "Status: 404, Message: not found".
+          authkey="$(printf '%s' "${TS_AUTHKEY}" | tr -d '[:space:]')"
+          client_id="$(printf '%s' "${TS_OAUTH_CLIENT_ID}" | tr -d '[:space:]')"
+          client_secret="$(printf '%s' "${TS_OAUTH_SECRET}" | tr -d '[:space:]')"
+
+          if [ -n "${authkey}" ]; then
+            case "${authkey}" in
+              tskey-auth-*) ;;
+              *)
+                echo "::error::TS_AUTHKEY does not look like an auth key: it must start with tskey-auth-. Copy the whole value from https://login.tailscale.com/admin/settings/keys"
+                exit 1
+                ;;
+            esac
+          elif [ -z "${client_id}" ] || [ -z "${client_secret}" ]; then
+            echo "::error::Add TS_AUTHKEY, or TS_OAUTH_CLIENT_ID together with TS_OAUTH_SECRET."
+            exit 1
+          fi
+
+          # Stop background apt timers so the Tailscale installer can take the apt lock.
+          sudo systemctl stop --now unattended-upgrades.service apt-daily.timer \
+            apt-daily-upgrade.timer 2>/dev/null || true
+
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+          if ! sudo systemctl is-active --quiet tailscaled; then
+            sudo systemctl status --no-pager tailscaled || true
+            echo "::error::tailscaled did not start."
+            exit 1
+          fi
+          sudo tailscale version
+
+          up=(--hostname="${TS_HOSTNAME}" --accept-routes=false --timeout=120s)
+          if [ -n "${authkey}" ]; then
+            # Tags come from the key itself (tick Tags when generating it).
+            up+=(--auth-key="${authkey}")
+          else
+            up+=(--client-id="${client_id}" --client-secret="${client_secret}" --advertise-tags="${TS_TAG}")
+          fi
+
+          if ! sudo tailscale up "${up[@]}"; then
+            echo "::error::tailscale up failed. The auth key has probably expired, been revoked, already been used (a one-off key works only once), or was copied incompletely. Create a fresh key with Reusable and Ephemeral ticked at https://login.tailscale.com/admin/settings/keys and update the TS_AUTHKEY secret."
+            exit 1
+          fi
+
+          sudo tailscale status | head -n 20
+          sudo tailscale ip -4
+
       - name: Free up disk space
         run: |
           set -euo pipefail
@@ -197,25 +255,6 @@ jobs:
           sudo systemctl restart xrdp
           sudo systemctl is-active xrdp
           ss -ltn | grep ':3389' || true
-
-      - name: Connect to Tailscale
-        uses: tailscale/github-action@v4
-        with:
-          authkey: ${{ secrets.TS_AUTHKEY }}
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: ${{ env.TS_TAG }}
-          hostname: ${{ env.TS_HOSTNAME }}
-          version: latest
-          timeout: 5m
-          retry: 3
-
-      - name: Keep the runner's routing table untouched
-        # The action always passes --accept-routes, so change it afterwards instead of
-        # passing the flag twice (tailscale up rejects duplicate booleans).
-        run: |
-          set -euo pipefail
-          sudo tailscale set --accept-routes=false || true
 
       - name: Show how to connect
         run: |

@@ -45,8 +45,9 @@ Cinnamon instead, say so and I will swap the desktop packages.
    and give the OAuth client the tag `tag:ci` when you create it.
 
    **B. Auth key (simpler)** — Admin console → **Settings** → **Keys** → **Generate auth key**,
-   tick **Ephemeral**, and copy the `tskey-auth-...` value. Keys expire (90 days max), so you will
-   re-do this eventually.
+   tick **Reusable** and **Ephemeral** (tick **Tags** too if you want the node tagged), then copy
+   the whole `tskey-auth-...` value. Keys expire (90 days max) and a **one-off** key stops working
+   after its first successful use, so Reusable matters here: every run is a new machine.
 
 3. Install Tailscale on the device you will connect *from* (iPhone, iPad, Mac, Windows, Linux) and
    sign in to the same tailnet.
@@ -62,16 +63,17 @@ In GitHub: **Settings** → **Secrets and variables** → **Actions** → **New 
 | `TS_AUTHKEY` | one of these pairs | Tailscale auth key instead of OAuth. |
 | `RDP_USER` | no | Username, defaults to `mint`. |
 | `TS_HOSTNAME` | no | Tailscale machine name, defaults to `mint-kde`. Must be a DNS label (letters, digits, dashes). |
-| `TS_TAG` | no | Tailscale tag for the node, defaults to `tag:ci`. Only used with OAuth. |
+| `TS_TAG` | no | Tailscale tag for the node, defaults to `tag:ci`. Only used with an OAuth client; with an auth key the tag comes from the key itself. |
 
 ## 3. Run it
 
 **Actions** → **Mint KDE desktop over RDP (Tailscale)** → **Run workflow**. Set
 `keep_alive_minutes` (default 320, max 330).
 
-Installing KDE takes roughly 5 to 15 minutes. When the **Show how to connect** step finishes, the
-run page gets a summary with the address, port, username and password. The desktop stays up until
-the keep-alive ends, or until you cancel the run.
+Tailscale connects first, before the desktop is installed, so a bad key fails in seconds instead
+of after a ten-minute KDE download. Installing KDE then takes roughly 5 to 15 minutes. When the
+**Show how to connect** step finishes, the run page gets a summary with the address, port,
+username and password. The desktop stays up until the keep-alive ends, or until you cancel the run.
 
 ## 4. Connect
 
@@ -133,7 +135,12 @@ If the name does not resolve, MagicDNS is off in your tailnet (Admin console →
 - **`requested tags [tag:ci] are invalid or not permitted`:** the OAuth client has no `tag:ci`, or
   `tagOwners` in your policy file does not allow it. Fix the tag or set the `TS_TAG` secret to
   the tag the client owns.
-- **`tailscale up` fails:** with an auth key, it probably expired — generate a new one.
+- **`tailscale up` fails with `Status: 404, Message: "not found"`:** Tailscale has no such key. It
+  expired, was revoked, was a one-off key that already logged a machine in, or the secret was not
+  copied completely. The workflow already trims stray spaces and newlines, so a 404 here means the
+  key itself: generate a fresh one with Reusable + Ephemeral ticked and re-paste the whole value.
+- **`TS_AUTHKEY does not look like an auth key`:** the secret does not start with `tskey-auth-`.
+  That is usually a Tailscale **API** token or an OAuth client ID sitting in the wrong secret.
 - **Cannot find the host:** MagicDNS off, or you are not signed in to the tailnet on the client.
   Use the IP from the run summary.
 - **"Failed to start session" in xrdp logs:** the desktop user's home is missing or not writable;
