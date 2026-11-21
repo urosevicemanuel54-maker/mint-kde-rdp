@@ -150,14 +150,34 @@ jobs:
             sleep 2
           done
 
-          if ! ss -ltn 2>/dev/null | grep ':3389' >/dev/null; then
-            docker ps -a || true
-            docker logs desktop || true
-            echo "::error::The desktop container is not listening on port 3389. The container log above says why."
+          echo "--- container ---"
+          docker ps -a --filter name=desktop
+          echo "--- container log ---"
+          docker logs desktop || true
+
+          # Docker's port proxy binds the host port even when nothing inside the container
+          # listens, so also check inside the container.
+          if [ "$(docker inspect -f '{{.State.Running}}' desktop 2>/dev/null)" != "true" ]; then
+            echo "::error::The desktop container is not running. Its log is above."
             exit 1
           fi
 
+          if ! docker exec desktop ss -ltn 2>/dev/null | grep ':3389' >/dev/null; then
+            docker exec desktop sh -c 'ps aux' || true
+            echo "::error::Nothing inside the container is listening on 3389. Its log and process list are above."
+            exit 1
+          fi
+
+          echo "--- reachability over Tailscale ---"
+          TS_IP="$(sudo tailscale ip -4 | sed -n '1p')"
+          if timeout 10 bash -c "exec 3<>/dev/tcp/${TS_IP}/3389"; then
+            echo "TCP connect to ${TS_IP}:3389 succeeded from the runner itself"
+          else
+            echo "::warning::Could not open TCP 3389 on ${TS_IP} from the runner itself."
+          fi
+
           ss -ltn | grep ':3389'
+          echo "Ready: ${TS_IP}:3389"
 
       - name: Show how to connect
         run: |
@@ -172,6 +192,9 @@ jobs:
             echo "- **Port:** \`3389\`"
             echo "- **Username:** \`${RDP_USER}\`"
             echo "- **Password:** the value of the RDP_PASSWORD secret"
+            echo ""
+            echo "If the name does not connect, use the Tailscale IP above: earlier runs leave offline"
+            echo "nodes behind that can still own the plain \`${TS_HOSTNAME}\` name."
             echo ""
             echo "Only devices signed in to your tailnet can reach this machine."
           } | tee -a "$GITHUB_STEP_SUMMARY"

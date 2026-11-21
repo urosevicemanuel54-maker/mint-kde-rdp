@@ -33,4 +33,15 @@ dbus-daemon --system --fork 2>/dev/null || true
 # Session manager first, then xrdp in the foreground so the container stays alive
 # and its logs go to `docker logs`.
 xrdp-sesman
+for _ in $(seq 1 15); do
+  if pgrep -x xrdp-sesman >/dev/null; then
+    break
+  fi
+  sleep 1
+done
+if ! pgrep -x xrdp-sesman >/dev/null; then
+  echo "xrdp-sesman did not start; sessions would fail even though xrdp binds 3389" >&2
+  exit 1
+fi
+
 exec xrdp --nodaemon
