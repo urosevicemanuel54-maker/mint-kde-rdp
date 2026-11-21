@@ -169,6 +169,9 @@ If the name does not resolve, MagicDNS is off in your tailnet (Admin console →
   key itself: generate a fresh one with Reusable + Ephemeral ticked and re-paste the whole value.
 - **`TS_AUTHKEY does not look like an auth key`:** the secret does not start with `tskey-auth-`.
   That is usually a Tailscale **API** token or an OAuth client ID sitting in the wrong secret.
+- **The machine shows up as `mint-kde-2` instead of `mint-kde`:** the previous ephemeral node has not
+  been reaped yet (Tailscale removes them 30 to 60 minutes after they go offline), so the new one
+  gets a suffix. Use the address the run printed, or wait an hour.
 - **Cannot find the host:** MagicDNS off, or you are not signed in to the tailnet on the client.
   Use the IP from the run summary.
 - **"Failed to start session" in xrdp logs:** the desktop user's home is missing or not writable;
