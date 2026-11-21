@@ -216,6 +216,29 @@ jobs:
           ss -ltn | grep ':3389'
           echo "Ready: ${TS_IP}:3389"
 
+      - name: Add a browser test page on port 8080
+        # Open this page on the phone. If it loads, the Tailscale route to this runner works and
+        # the RDP failure is about xrdp or the client. If it does not load, it is the network.
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/rdp-probe
+          cat > /tmp/rdp-probe/index.html <<'HTML'
+          <!doctype html>
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>Desktop reachability test</title>
+          <body style="font-family:-apple-system,sans-serif;padding:2rem;line-height:1.5">
+          <h1>Tailscale path works</h1>
+          <p>You can reach this runner from your phone over Tailscale.</p>
+          <p>So the network is fine. If the RDP client still cannot connect, the problem is
+          xrdp or the client settings, not Tailscale.</p>
+          <p>RDP is on this same address, port 3389.</p>
+          </body>
+          HTML
+          sudo systemd-run --unit=probe-http --collect \
+            python3 -m http.server 8080 --bind 0.0.0.0 --directory /tmp/rdp-probe
+          sleep 2
+          curl -fsS "http://127.0.0.1:8080/" >/dev/null && echo "browser test page is up on 8080"
+
       - name: Show how to connect
         run: |
           set -euo pipefail
@@ -229,6 +252,9 @@ jobs:
             echo "- **Port:** \`3389\`"
             echo "- **Username:** \`${RDP_USER}\`"
             echo "- **Password:** the value of the RDP_PASSWORD secret"
+            echo ""
+            echo "- **Browser test:** \`http://${TS_IP}:8080\` — open this on your phone first. If it"
+            echo "  loads, the network path is fine and the RDP problem is xrdp or the client."
             echo ""
             echo "If the name does not connect, use the Tailscale IP above: earlier runs leave offline"
             echo "nodes behind that can still own the plain \`${TS_HOSTNAME}\` name."
