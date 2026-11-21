@@ -19,7 +19,8 @@ permissions:
 
 concurrency:
   group: mint-kde-rdp
-  cancel-in-progress: false
+  # A new run replaces the old desktop instead of waiting behind its 5.5 hour keep-alive.
+  cancel-in-progress: true
 
 jobs:
   desktop:

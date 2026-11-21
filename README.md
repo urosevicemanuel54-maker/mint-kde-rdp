@@ -104,6 +104,12 @@ the Tailscale IP, and the log says which of the two failed.
 
 ## 5. Connect
 
+**A desktop only exists while its run is still in progress.** The machine is the runner, so when the
+job ends or is cancelled there is nothing left at that address and the RDP client reports "can't
+establish a connection" — which looks like RDP never started. Check the run is still running, and
+check the node in the Tailscale app on your phone: **online** means connect, **offline** means there
+is no desktop to reach. Starting a new run cancels the previous one rather than queueing behind it.
+
 - **iPhone / iPad:** Microsoft **Windows App** (formerly Remote Desktop) → **+** → **Add PC** →
   address `mint-kde` (or the `100.x.y.z` Tailscale IP), user account `mint` + your password. Set a
   resolution and "fit to screen" in the PC settings; the default is small.
