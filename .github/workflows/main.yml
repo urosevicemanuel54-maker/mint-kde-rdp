@@ -1,0 +1,255 @@
+name: Mint KDE desktop over RDP (Tailscale)
+
+# Spins up a throwaway Linux desktop on a GitHub-hosted runner:
+#   * Ubuntu 24.04 base (what Linux Mint is built on) + KDE Plasma + Mint's Mint-Y icons
+#   * xrdp on port 3389, reachable ONLY through your Tailscale tailnet
+#   * username / password login, so any RDP client works
+#
+# GitHub kills every job after 6 hours, so each run is a temporary machine.
+# See README.md for the setup steps and the cost notes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_alive_minutes:
+        description: "How long to keep the desktop online, in minutes (max 330)"
+        required: false
+        default: "320"
+
+  # Uncomment to have a desktop online around the clock: a run every 6 hours
+  # replaces the one GitHub killed. On a private repo this bills ~340 minutes
+  # per run, which eats the free 2000 minutes/month in under a week.
+  # schedule:
+  #   - cron: "0 */6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mint-kde-rdp
+  cancel-in-progress: false
+
+jobs:
+  desktop:
+    name: KDE Plasma + xrdp + Tailscale
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+
+    env:
+      RDP_USER: ${{ secrets.RDP_USER || 'mint' }}
+      RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+      TS_HOSTNAME: ${{ secrets.TS_HOSTNAME || 'mint-kde' }}
+      TS_TAG: ${{ secrets.TS_TAG || 'tag:ci' }}
+      KEEP_ALIVE_MINUTES: ${{ github.event.inputs.keep_alive_minutes || '320' }}
+
+    steps:
+      - name: Check the required secrets
+        env:
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          set -euo pipefail
+          missing=0
+
+          if [ -z "${RDP_PASSWORD}" ]; then
+            echo "::error::Add a repository secret RDP_PASSWORD: the password for the desktop user."
+            missing=1
+          fi
+
+          if [ -z "${TS_OAUTH_CLIENT_ID}" ] && [ -z "${TS_AUTHKEY}" ]; then
+            echo "::error::Add either TS_OAUTH_CLIENT_ID + TS_OAUTH_SECRET (recommended), or TS_AUTHKEY."
+            missing=1
+          fi
+
+          if [ -n "${TS_OAUTH_CLIENT_ID}" ] && [ -z "${TS_OAUTH_SECRET}" ]; then
+            echo "::error::TS_OAUTH_CLIENT_ID is set but TS_OAUTH_SECRET is missing."
+            missing=1
+          fi
+
+          if [ "${missing}" -ne 0 ]; then
+            exit 1
+          fi
+
+          echo "Secrets look complete."
+
+      - name: Free up disk space
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+            /usr/local/.ghcup /opt/Microsoft /usr/share/swift || true
+          sudo apt-get clean
+          df -h /
+
+      - name: Install KDE Plasma and xrdp
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            kde-plasma-desktop \
+            plasma-workspace \
+            plasma-widgets-addons \
+            kwin-x11 \
+            kscreen \
+            plasma-nm \
+            plasma-pa \
+            systemsettings \
+            konsole \
+            dolphin \
+            kate \
+            xrdp \
+            xorgxrdp \
+            dbus-x11 \
+            x11-xserver-utils \
+            fonts-dejavu-core \
+            fonts-noto-color-emoji
+          sudo apt-get clean
+          df -h /
+
+      - name: Create the desktop user
+        run: |
+          set -euo pipefail
+
+          if ! id -u "${RDP_USER}" >/dev/null 2>&1; then
+            sudo useradd -m -s /bin/bash "${RDP_USER}"
+          fi
+
+          sudo usermod -aG sudo,ssl-cert "${RDP_USER}"
+          printf '%s:%s\n' "${RDP_USER}" "${RDP_PASSWORD}" | sudo chpasswd
+
+          echo "${RDP_USER} ALL=(ALL) NOPASSWD:ALL" \
+            | sudo tee "/etc/sudoers.d/90-${RDP_USER}" >/dev/null
+          sudo chmod 0440 "/etc/sudoers.d/90-${RDP_USER}"
+
+          # lets xrdp read its TLS key
+          sudo adduser xrdp ssl-cert || true
+
+      - name: Prepare the user's desktop settings
+        run: |
+          set -euo pipefail
+          home="/home/${RDP_USER}"
+          group="$(id -gn "${RDP_USER}")"
+          sudo install -d -o "${RDP_USER}" -g "${group}" -m 0700 "${home}/.config"
+
+          # No screen locker: it would ask for the password at every reconnect.
+          printf '[Daemon]\nAutolock=false\nLockOnResume=false\n' \
+            | sudo tee "${home}/.config/kscreenlockerrc" >/dev/null
+
+          # No KDE Wallet prompt on login.
+          printf '[Wallet]\nEnabled=false\nFirst Use=false\n' \
+            | sudo tee "${home}/.config/kwalletrc" >/dev/null
+
+          # Compositing off: far smoother over RDP. Drop this file for fancy effects.
+          printf '[Compositing]\nEnabled=false\n' \
+            | sudo tee "${home}/.config/kwinrc" >/dev/null
+
+          sudo chown -R "${RDP_USER}:${group}" "${home}/.config"
+
+      - name: Add the Linux Mint look
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          git clone --depth 1 https://github.com/linuxmint/mint-y-icons.git "${tmp}/icons"
+          sudo cp -r "${tmp}/icons/usr/share/icons/." /usr/share/icons/
+          sudo gtk-update-icon-cache -f -t /usr/share/icons/Mint-Y || true
+
+          sudo -u "${RDP_USER}" bash -lc 'if command -v kwriteconfig5 >/dev/null 2>&1; then
+            kwriteconfig5 --file kdeglobals --group Icons --key Theme Mint-Y
+          fi'
+
+      - name: Configure xrdp to start KDE Plasma
+        run: |
+          set -euo pipefail
+
+          sudo tee /etc/xrdp/startwm.sh >/dev/null <<'STARTWM'
+          #!/bin/bash
+          # Session started by xrdp on every RDP login.
+          if [ -r /etc/profile ]; then . /etc/profile; fi
+          if [ -f "$HOME/.profile" ]; then . "$HOME/.profile"; fi
+
+          export XDG_SESSION_TYPE=x11
+          export XDG_CURRENT_DESKTOP=KDE
+          export XDG_SESSION_DESKTOP=KDE
+          export DESKTOP_SESSION=plasma
+          export XDG_RUNTIME_DIR="/tmp/xrdp-runtime-$USER"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+
+          exec dbus-run-session -- startplasma-x11
+          STARTWM
+
+          sudo chmod 0755 /etc/xrdp/startwm.sh
+
+          sudo systemctl enable --now xrdp
+          sudo systemctl restart xrdp
+          sudo systemctl is-active xrdp
+          ss -ltn | grep ':3389' || true
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: ${{ env.TS_TAG }}
+          hostname: ${{ env.TS_HOSTNAME }}
+          version: latest
+          timeout: 5m
+          retry: 3
+          # Do not pull your tailnet's advertised subnet routes into the runner's routing table.
+          args: --accept-routes=false
+
+      - name: Show how to connect
+        run: |
+          set -euo pipefail
+          TS_IP="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
+          TS_NAME="$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' 2>/dev/null | sed 's/\.$//' || true)"
+          {
+            echo "## Your desktop is online"
+            echo ""
+            echo "- **Address:** \`${TS_NAME:-$TS_IP}\`"
+            echo "- **Tailscale IP:** \`${TS_IP}\`"
+            echo "- **Port:** \`3389\`"
+            echo "- **Username:** \`${RDP_USER}\`"
+            echo "- **Password:** the value of the RDP_PASSWORD secret"
+            echo ""
+            echo "Only devices signed in to your tailnet can reach this machine."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the desktop online
+        run: |
+          set -euo pipefail
+          minutes="${KEEP_ALIVE_MINUTES}"
+
+          if ! [[ "${minutes}" =~ ^[0-9]+$ ]]; then
+            echo "keep_alive_minutes must be a whole number of minutes."
+            exit 1
+          fi
+
+          if [ "${minutes}" -gt 330 ]; then
+            echo "Clamping keep-alive time to 330 minutes (GitHub stops a job at 6 hours)."
+            minutes=330
+          fi
+
+          deadline=$(( $(date +%s) + minutes * 60 ))
+          echo "Desktop will stay online for ${minutes} minutes."
+
+          while [ "$(date +%s)" -lt "${deadline}" ]; do
+            left=$(( deadline - $(date +%s) ))
+            step=$(( left < 600 ? left : 600 ))
+            if [ "${step}" -gt 0 ]; then
+              sleep "${step}"
+            fi
+
+            if ! sudo systemctl is-active --quiet xrdp; then
+              echo "xrdp stopped running, restarting it"
+              sudo systemctl restart xrdp || true
+            fi
+
+            echo "Still online, $(( left / 60 )) minute(s) left"
+          done
+
+          echo "Keep-alive finished, the runner will be destroyed."
