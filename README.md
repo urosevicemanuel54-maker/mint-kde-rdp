@@ -75,7 +75,29 @@ of after a ten-minute KDE download. Installing KDE then takes roughly 5 to 15 mi
 **Show how to connect** step finishes, the run page gets a summary with the address, port,
 username and password. The desktop stays up until the keep-alive ends, or until you cancel the run.
 
-## 4. Connect
+If you would rather not wait for that install each time, use the prebuilt-image workflow in the next
+section.
+
+## 4. Fast start: prebuilt image (~1 minute)
+
+The workflow above installs KDE on every run. To get the near-instant start that most GitHub RDP
+projects have, bake the desktop into a container image once and boot that instead:
+
+1. Run **Actions** → **Build desktop image** → **Run workflow** once. It installs KDE Plasma +
+   xrdp + Mint's icons into `ghcr.io/<your-owner>/<repo>:latest` (roughly 5 to 10 minutes the first
+   time) and re-runs by itself whenever something in `docker/` changes.
+2. Then use **Actions** → **Mint KDE desktop over RDP (prebuilt image)** → **Run workflow**. That
+   only pulls the image and starts the container — about a minute to the login screen.
+
+Both workflows use the same secrets, the same Tailscale node name and the same login, so you can
+switch between them whenever you like. The from-scratch workflow stays as the fallback if the image
+is missing or you changed `docker/Dockerfile` without rebuilding.
+
+The image is a private GHCR package by default; the workflow logs in with the repository token to
+pull it, so nothing has to be public. `prebuilt.yml` runs `docker run --privileged`, which Xorg
+inside the container needs — it is a throwaway runner, so that trade is fine.
+
+## 5. Connect
 
 - **iPhone / iPad:** Microsoft **Windows App** (formerly Remote Desktop) → **+** → **Add PC** →
   address `mint-kde` (or the `100.x.y.z` Tailscale IP), user account `mint` + your password. Set a

@@ -1,0 +1,213 @@
+name: Mint KDE desktop over RDP (prebuilt image)
+
+# Fast path: no desktop install. It pulls the image baked by the "Build desktop image" workflow and
+# starts it in Docker, so the desktop is up in about a minute. Run "Build desktop image" once first.
+#
+# The from-scratch workflow (main.yml) still works and is the fallback if the image is unavailable.
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_alive_minutes:
+        description: "How long to keep the desktop online, in minutes (max 330)"
+        required: false
+        default: "320"
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: mint-kde-rdp
+  cancel-in-progress: false
+
+jobs:
+  desktop:
+    name: KDE Plasma + xrdp + Tailscale (prebuilt)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+
+    env:
+      RDP_USER: ${{ secrets.RDP_USER || 'mint' }}
+      RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+      TS_HOSTNAME: ${{ secrets.TS_HOSTNAME || 'mint-kde' }}
+      TS_TAG: ${{ secrets.TS_TAG || 'tag:ci' }}
+      KEEP_ALIVE_MINUTES: ${{ github.event.inputs.keep_alive_minutes || '320' }}
+
+    steps:
+      - name: Check the required secrets
+        env:
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          set -euo pipefail
+          missing=0
+
+          if [ -z "${RDP_PASSWORD}" ]; then
+            echo "::error::Add a repository secret RDP_PASSWORD: the password for the desktop user."
+            missing=1
+          fi
+
+          if [ -z "${TS_OAUTH_CLIENT_ID}" ] && [ -z "${TS_AUTHKEY}" ]; then
+            echo "::error::Add either TS_OAUTH_CLIENT_ID + TS_OAUTH_SECRET (recommended), or TS_AUTHKEY."
+            missing=1
+          fi
+
+          if [ -n "${TS_OAUTH_CLIENT_ID}" ] && [ -z "${TS_OAUTH_SECRET}" ]; then
+            echo "::error::TS_OAUTH_CLIENT_ID is set but TS_OAUTH_SECRET is missing."
+            missing=1
+          fi
+
+          if [ "${missing}" -ne 0 ]; then
+            exit 1
+          fi
+
+          echo "Secrets look complete."
+
+      - name: Connect to Tailscale
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+        run: |
+          set -euo pipefail
+
+          # Secrets pasted on a phone often carry a trailing newline or spaces, which the
+          # control plane answers with "Status: 404, Message: not found".
+          authkey="$(printf '%s' "${TS_AUTHKEY}" | tr -d '[:space:]')"
+          client_id="$(printf '%s' "${TS_OAUTH_CLIENT_ID}" | tr -d '[:space:]')"
+          client_secret="$(printf '%s' "${TS_OAUTH_SECRET}" | tr -d '[:space:]')"
+
+          if [ -n "${authkey}" ]; then
+            case "${authkey}" in
+              tskey-auth-*) ;;
+              *)
+                echo "::error::TS_AUTHKEY does not look like an auth key: it must start with tskey-auth-. Copy the whole value from https://login.tailscale.com/admin/settings/keys"
+                exit 1
+                ;;
+            esac
+          elif [ -z "${client_id}" ] || [ -z "${client_secret}" ]; then
+            echo "::error::Add TS_AUTHKEY, or TS_OAUTH_CLIENT_ID together with TS_OAUTH_SECRET."
+            exit 1
+          fi
+
+          # Stop background apt timers so the Tailscale installer can take the apt lock.
+          sudo systemctl stop --now unattended-upgrades.service apt-daily.timer \
+            apt-daily-upgrade.timer 2>/dev/null || true
+
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+          if ! sudo systemctl is-active --quiet tailscaled; then
+            sudo systemctl status --no-pager tailscaled || true
+            echo "::error::tailscaled did not start."
+            exit 1
+          fi
+          sudo tailscale version
+
+          up=(--hostname="${TS_HOSTNAME}" --accept-routes=false --timeout=120s)
+          if [ -n "${authkey}" ]; then
+            # Tags come from the key itself (tick Tags when generating it).
+            up+=(--auth-key="${authkey}")
+          else
+            up+=(--client-id="${client_id}" --client-secret="${client_secret}" --advertise-tags="${TS_TAG}")
+          fi
+
+          if ! sudo tailscale up "${up[@]}"; then
+            echo "::error::tailscale up failed. The auth key has probably expired, been revoked, already been used (a one-off key works only once), or was copied incompletely. Create a fresh key with Reusable and Ephemeral ticked at https://login.tailscale.com/admin/settings/keys and update the TS_AUTHKEY secret."
+            exit 1
+          fi
+
+          sudo tailscale status | head -n 20
+          sudo tailscale ip -4
+
+      - name: Start the prebuilt desktop
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:latest"
+          echo "Using image ${image}"
+
+          echo "${GHCR_TOKEN}" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+          if ! docker pull "${image}"; then
+            echo "::error::Could not pull ${image}. Run the 'Build desktop image' workflow once (Actions -> Build desktop image -> Run workflow) and try again."
+            exit 1
+          fi
+
+          docker rm -f desktop >/dev/null 2>&1 || true
+          docker run -d --name desktop --privileged --init --shm-size=1g \
+            -p 3389:3389 \
+            -e RDP_USER="${RDP_USER}" \
+            -e RDP_PASSWORD="${RDP_PASSWORD}" \
+            "${image}"
+
+          for _ in $(seq 1 60); do
+            if ss -ltn 2>/dev/null | grep ':3389' >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+
+          if ! ss -ltn 2>/dev/null | grep ':3389' >/dev/null; then
+            docker ps -a || true
+            docker logs desktop || true
+            echo "::error::The desktop container is not listening on port 3389. The container log above says why."
+            exit 1
+          fi
+
+          ss -ltn | grep ':3389'
+
+      - name: Show how to connect
+        run: |
+          set -euo pipefail
+          TS_IP="$(sudo tailscale ip -4 2>/dev/null | head -n1 || true)"
+          TS_NAME="$(sudo tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' 2>/dev/null | sed 's/\.$//' || true)"
+          {
+            echo "## Your desktop is online"
+            echo ""
+            echo "- **Address:** \`${TS_NAME:-$TS_IP}\`"
+            echo "- **Tailscale IP:** \`${TS_IP}\`"
+            echo "- **Port:** \`3389\`"
+            echo "- **Username:** \`${RDP_USER}\`"
+            echo "- **Password:** the value of the RDP_PASSWORD secret"
+            echo ""
+            echo "Only devices signed in to your tailnet can reach this machine."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the desktop online
+        run: |
+          set -euo pipefail
+          minutes="${KEEP_ALIVE_MINUTES}"
+
+          if ! [[ "${minutes}" =~ ^[0-9]+$ ]]; then
+            echo "keep_alive_minutes must be a whole number of minutes."
+            exit 1
+          fi
+
+          if [ "${minutes}" -gt 330 ]; then
+            echo "Clamping keep-alive time to 330 minutes (GitHub stops a job at 6 hours)."
+            minutes=330
+          fi
+
+          deadline=$(( $(date +%s) + minutes * 60 ))
+          echo "Desktop will stay online for ${minutes} minutes."
+
+          while [ "$(date +%s)" -lt "${deadline}" ]; do
+            left=$(( deadline - $(date +%s) ))
+            step=$(( left < 600 ? left : 600 ))
+            if [ "${step}" -gt 0 ]; then
+              sleep "${step}"
+            fi
+
+            if ! ss -ltn 2>/dev/null | grep ':3389' >/dev/null; then
+              echo "The desktop stopped listening, restarting the container"
+              docker logs --tail 20 desktop || true
+              docker restart desktop || true
+            fi
+
+            echo "Still online, $(( left / 60 )) minute(s) left"
+          done
+
+          echo "Keep-alive finished, the runner will be destroyed."
