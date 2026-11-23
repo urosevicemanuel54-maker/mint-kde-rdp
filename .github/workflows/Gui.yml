@@ -1,0 +1,52 @@
+
+name: SSH Desktop Cloud
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          hostname: github-sshdesktop
+
+      - name: Install SSH Desktop
+        run: |
+          curl -fsSL https://sshdesktop.com/install.sh -o install.sh
+          sudo bash install.sh
+
+      - name: Start SSH Desktop
+        run: |
+          sudo systemctl enable sshdesktop
+          sudo systemctl restart sshdesktop
+          sleep 5
+          sudo systemctl status sshdesktop --no-pager
+
+      - name: Show connection details
+        run: |
+          echo "================================"
+          echo "SSH DESKTOP IS READY"
+          echo "================================"
+          echo "Tailscale IP:"
+          tailscale ip -4
+          echo ""
+          echo "Open in Safari:"
+          echo "http://$(tailscale ip -4):2222"
+          echo ""
+          echo "Login credentials:"
+          sudo cat /var/lib/sshdesktop/initial-admin-credentials.txt
+
+      - name: Keep desktop running
+        run: |
+          while true; do
+            sleep 300
+          done
