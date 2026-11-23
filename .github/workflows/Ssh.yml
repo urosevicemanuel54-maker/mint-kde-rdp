@@ -1,0 +1,76 @@
+
+name: SSH Desktop Cloud Test2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      # 1. Connect runner to your Tailscale network
+      - name: Connect Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          hostname: github-sshdesktop
+
+      # 2. Install SSH Desktop Web Mode
+      - name: Install SSH Desktop
+        run: |
+          curl -fsSL https://sshdesktop.com/install.sh -o install.sh
+          sudo bash install.sh
+
+      # 3. Start the web server
+      - name: Start SSH Desktop
+        run: |
+          sudo systemctl enable --now sshdesktop
+          sleep 5
+
+          sudo systemctl status sshdesktop --no-pager
+
+      # 4. Test frontend and backend
+      - name: Diagnose SSH Desktop
+        run: |
+          echo "========== LISTENING PORTS =========="
+          sudo ss -lntp
+
+          echo "========== LOCAL FRONTEND =========="
+          curl -sS --max-time 15 \
+            -o /dev/null \
+            -w "HTTP status: %{http_code}\n" \
+            http://127.0.0.1:2222/ || true
+
+          echo "========== LOCAL BACKEND =========="
+          curl -sS --max-time 10 \
+            -o /dev/null \
+            -w "HTTP status: %{http_code}\n" \
+            http://127.0.0.1:2020/ || true
+
+          echo "========== TAILSCALE FRONTEND =========="
+          IP=$(tailscale ip -4)
+
+          curl -sS --max-time 15 \
+            -o /dev/null \
+            -w "HTTP status: %{http_code}\n" \
+            http://$IP:2222/ || true
+
+          echo "========== TAILSCALE STATUS =========="
+          tailscale status
+
+          echo "========== CONNECTION =========="
+          echo "Tailscale IP: $IP"
+          echo "Web URL: http://$IP:2222"
+
+      # 5. Keep the cloud desktop alive
+      - name: Keep Desktop Running
+        run: |
+          echo "SSH Desktop is running."
+          while true; do
+            sleep 300
+          done
